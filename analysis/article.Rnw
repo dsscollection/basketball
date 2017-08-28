@@ -1,0 +1,467 @@
+\documentclass[fleqn,10pt]{wlpeerj}
+\usepackage{url}
+\usepackage{float}
+\usepackage{tikz}
+\usepackage{amsmath}
+\usetikzlibrary{shapes.geometric, arrows}
+
+\title{Modeling Offensive Player Movement in Professional Basketball}
+
+\author[1]{Steven Wu}
+\author[1,2]{Luke Bornn}
+\affil[1]{Department of Statistics and Actuarial Science, Simon Fraser University}
+\affil[2]{Sacramento Kings}
+
+%\keywords{sports statistics; data science; data visualization}
+
+\begin{abstract}
+The 2013 arrival of SportVU player tracking data in all NBA arenas introduced an overwhelming amount of on-court information - information which the league is still learning how to maximize for insights into player performance and basketball strategy. Knowing where the ball and every player on the court are at all times throughout the course of the game produces almost endless possibilities, and it can be difficult figuring out where to begin. This article serves as a step-by-step guide for how to turn a data feed of one million rows of SportVU data from one NBA game into visualizable components you can use to model any player's movement. We detail some utility functions that are helpful for manipulating SportVU data before applying it to the task of visualizing player offensive movement. We conclude with visualizations of the resulting output for one NBA game, as well as what the results look like aggregated across an entire season for three NBA stars with very different offensive tendencies.
+\end{abstract}
+
+\begin{document}
+
+\tikzstyle{data} = [rectangle, minimum width=0.5cm, minimum height=0.5cm, text centered, draw=black, fill=green!30]
+\tikzstyle{constant} = [circle, trapezium left angle=70, trapezium right angle=110, minimum width=1.5cm, minimum height=0.5cm, text centered, draw=black, fill=blue!30]
+\tikzstyle{plot} = [diamond, minimum width=0.5cm, minimum height=0.5cm, text centered, draw=black, fill=red!30]
+\tikzstyle{arrow} = [thick,->,>=stealth]
+
+\flushbottom
+\maketitle
+\thispagestyle{empty}
+
+\section*{Introduction}
+
+The introduction of STATS SportVU, a six-camera system installed in every NBA arena, introduced a new era of sophisticated analytics~\citep{counterpoints, moveordie, defensiveskill}. Previous to this technology, the most granular type of data was play-by-play: a text log of the major events (shot attempts, rebounds, etc.) that occur throughout the game. In contrast, SportVU's spatio-temporal data is 25 frames per second of data on the $(x,y)$ coordinates of each of the ten players on the court, plus $(x,y,z)$ coordinates of the ball. The result is approximately one million rows per game. For context on how much data there is to process, each of the 30 NBA teams plays 82 games per season. The resulting data can quickly become overwhelming to work with, both conceptually and computationally.
+
+Knowing precisely where each player is throughout a game spurs interesting questions about movement. Can we understand how players move with and without the ball? Are we able to simulate player movement? Such questions also have downstream implications; for example, recent models for estimating instantaneous possession value rely on an underlying player movement model~\citep{EPV}.
+
+Imagine a simulator that approximates movement for each individual player, conditioned on all of the factors involving the player - front-office decision makers could understand how different lineup permutations could potentially co-exist on the court at a finer level before committing to irreversible decisions. This article presents a comprehensive walkthrough of how we turn this raw data into results that can be used for a first-approximation simulator for NBA player movement on offense, and how this can help gain new insights on player offensive movement tendencies. We're going to focus on offensive movement, as defensive movement is largely a function of the offensive player the defender is guarding.
+
+\section*{Availability of the Data}
+The data used in this article is the SportVU data for one sample game, available as a .csv file at \url{https://github.com/dsscollection/basketball}. There is another GitHub repository, \url{https://github.com/neilmj}, where efforts are made to upload raw SportVU data on a regular basis \citep{github_sportvu_data}. Several blog posts exist online that provide examples of varying detail into programatically accessing the \url{http://stats.nba.com} API directly \citep{gregreda_api} \citep{danielforsyth_api}.
+
+%APIs can be unreliable for a number of reasons. As updates often happen when development on the API continues for new features and bug fixes, both the structure of your requests and the handling of the responses may require change in your code. Sometimes, such as the announcement on January 25 2016 on \url{http://stats.nba.com/help/whatsnew/} of the player movements API, a feature may unexpectedly shut down or cease to work. Learning how to extract information from online sources through scraping and API requests is a topic beyond the scope of this article. However, it is a useful skill to build your own datasets of interest, and it will allow you to adapt with the dynamic nature of the web.
+
+\section*{Looking at the Data}
+To start, we work with the spatio-temporal data coming from a game on November 1st, 2013 featuring the Miami Heat visiting the Brooklyn Nets. Note that this dataset has only 89868 rows because the spatial coordinates for the ball and ten players on the court in any given instant are given in one row, not one row per entity.
+
+Each row in the dataset includes the spatial coordinates (in feet) for all entities on the court for one moment in time, along with contextual variables. For the uninitiated, the basketball court in an NBA arena is 94 feet by 50 feet. $(0,0)$ is the corner of the court and $(47,25)$ is the coordinate for center court.
+
+Tables 1 and 2 offer a peek at a sample of the dataset. Table \ref{column_table} details the important columns in the sample game.:
+
+<<load_libs, warning=FALSE, message=FALSE, echo=FALSE>>=
+# Load libraries and data
+library(here)
+library(xtable)
+library(dplyr)
+
+source('constants.R')
+source('utils.R')
+source('movement_functions.R')
+source('visualization_functions.R')
+
+# Away = Miami, Home = Brooklyn
+moments = read.csv('../data/2013_11_01_MIA_BKN.csv')
+@
+
+<<step1, warning=FALSE, message=FALSE, results="asis", cache=TRUE, echo=FALSE>>=
+rows1 = xtable(
+    dplyr::select(moments[214:216,], time:z),
+    caption="Sample of dataset's columns listed in Table 3",
+    digits=2)
+rows2 = xtable(
+    dplyr::select(moments[214:216,], a1_ent, a1_x, a1_y, a1_event, possID),
+    caption="Sample of rest of dataset's columns listed in Table 3",
+    digits=2)
+print(rows1, caption.placement="top")
+print(rows2, caption.placement="top")
+@
+
+<<plotdistancescode, warning=FALSE, message=FALSE, echo=FALSE>>=
+
+# LeBron James' ID
+p_id = 214152
+team = 'a'
+moments_df = add_possession_data(moments)
+dir_of_play = get_directions_of_play(moments_df)
+off_moments = get_offensive_moments(team, dir_of_play, moments_df)
+player_df = get_player_offensive_moments(team, p_id, off_moments)
+flipped_df = flip_coords(player_df, team, dir_of_play)
+df_on_ball = flipped_df[flipped_df$ent_w_poss == p_id,]
+df_off_ball = flipped_df[flipped_df$ent_w_poss != p_id,]
+@
+
+\begin{table}[htb!]
+\centering
+\caption{Description of data columns in 2013\_11\_01\_MIA\_BKN.csv}
+\label{column_table}
+\begin{tabular}{ p{0.1\linewidth} p{0.1\linewidth} p{0.7\linewidth} }
+\textbf{Column Name} & \textbf{Data Type (Range)} & \textbf{Description}                                                                         \\
+time                 & integer                    & how many milliseconds have passed since the start of the game                                \\
+game                 & integer                    & a unique identifier for the game that this dataset refers to                                 \\
+quarter              & integer                    & the quarter of the game (games have at least 4, with possible overtimes)                     \\
+shot\_clock          & numeric             & number of seconds left in the offensive possession before a turnover occurs                  \\
+game\_clock          & numeric            & number of seconds left in the quarter                                                        \\
+x                    & numeric                    & x coordinate on the court axis for the ball, in feet                                     \\
+y                    & numeric                    & y coordinate on the court axis for the ball, in feet                                     \\
+z                    & numeric                    & z coordinate (perpendicular to court surface) for the ball, in feet                     \\
+(a$|$h)\textit{i}\_ent          & integer                    & entity id for the $i^{th}$ player on the court for the (a)way or (h)ome team         \\
+(a$|$h)\textit{i}\_x            & numeric                    & x for the $i^{th}$ player on the court for the (a)way or (h)ome team         \\
+(a$|$h)\textit{i}\_y            & numeric                    & y for the $i^{th}$ player on the court for the (a)way or (h)ome team         \\
+(a$|$h)\textit{i}\_event            & integer                    & event id for the $i^{th}$ player on the court for the (a)way or (h)ome team \\
+possID               & integer                    & running count of the number of changes in team possession
+\end{tabular}
+\end{table}
+
+
+\section*{Utility Functions}
+
+Before getting started with the movement modeling, we define some utility functions (functions which provide general functionality that are useful and reusable for other applications with the same data).
+
+\subsection*{Labelling Who Has Possession}
+
+To begin querying for offensive moments, we create a function
+\textit{add\_possession\_data\_for\_quarter()} that augments our data by adding two additional columns: one indicating which team has possession, and one indicating which entity has possession (-1 indicates neither team having possession, such as during the time between the game beginning at the tip-off until the moment when a player controls the ball). The hard work is done for us with the \textbf{event\_id} column - it contains information on exactly which moment the possession changes between player to player (the \textbf{event\_id} for possession is 23). Defensive and offensive rebound moments, which have their own \textbf{event\_id}, do not explicitly follow with the possession \textbf{event\_id}, so we check for those events too for tracking changes in possession.
+
+\textit{add\_possession\_data()} calls this function for each quarter and stitches together the result before adding column names to the two new columns of data. Table 4 shows an example of the same rows shown in Tables 1 and 2, but with the new possession data added.
+
+<<print_add_possession_output, warning=FALSE, message=FALSE, results="asis", cache=TRUE, echo=FALSE, fig.pos="H">>=
+rows = xtable(
+    dplyr::select(moments_df[214:216,], a1_ent:a1_event, possID:ent_w_poss),
+    caption="Output of add\\_possession\\_data(): Same rows as Table 1 and 2. Two new columns team\\_w\\_poss and ent\\_w\\_poss for easy querying of when a particular player or team possesses the ball",
+    digits=c(0,0,2,2,0,0,0,0))
+print(rows, caption.placement="top")
+@
+
+\subsection*{Filtering Out Noisy Offensive Moments}
+Now that we have appended data that explicitly tells us what team and what entity has possession at every moment, we could gather all offensive moments by filtering for all rows where the player's team possessed the ball by using the newly created \textbf{team\_w\_poss} column. However, this would be a bit too naive, as it would include two cases of moments which we would want filtered out:
+\begin{enumerate}
+\item from when the ball is carried from the team's own side of the court until when the ball passes over the midcourt (where players move mostly in a linear fashion to the offensive half of the court)
+\item from when a shot attempt has gone up until when the ball either lands in the hoop, in a player's hand, or out of bounds (where players either move mostly in a linear fashion toward the hoop to crash the boards or toward their own hoop to play transition defense)
+\end{enumerate}
+
+Including these moments would add a substantial amount of undesirable noise. Movement that occurs in these two cases don't reflect the on-ball and off-ball player movement in an offensive possession that we want to capture and model. What is most interesting about players' motion on offense is how they behave from when the possession starts in the half-court up until the possession ends by either a shot attempt or turnover. The details of how we remove these irrelevant moments from consideration follows below.
+
+\subsubsection*{Offensive Moments Before Half Court}
+Let's review how an NBA game is structured: teams start out shooting on opposing ends for the first half, and then switch sides after half-time. To filter for only offensive moments where all offensive players have crossed the mid-court, we need a function to determine which direction each team is attacking for each half. One way to do this is to find all moments where a shot occurred for each team, find the average $x$ coordinate value, and check which team has their average on the left hand side of the court and which team has their average on the right hand side. This is what we do in \textit{get\_directions\_of\_play()}, where the output is shown in Table 5.
+
+<<print_dir_of_play_output, warning=FALSE, message=FALSE, results="asis", cache=TRUE, echo=FALSE>>=
+rows = xtable(
+    dir_of_play,
+    caption="Output of get\\_directions\\_of\\_play(): one row per team and one column per half")
+print(rows, caption.placement="top")
+@
+
+\subsubsection*{Offensive Moments After Shot Attempts}
+
+Immediately after a shot is attempted, a player's tendency is to usually crash the paint for an offensive rebound attempt or to run backwards to set up for defense. Using the \textbf{event\_id} column, we can identify all row indices where a field goal make/miss is recorded, and all row indices where a ball is possessed or rebounded. For every field goal make/miss, we find the closest event that concludes the shot attempt, and ignore the moments in between.
+
+
+By encoding this logic into \textit{get\_offensive\_moments()} and applying the function for this game, the number of total moments to process is reduced from 89868 to 24218. Even though approximately half of the game is split between playing offense and defense from a team's perspective, the percentage of rows kept is lower than expected because we are only keeping moments where the game clock is running.
+
+\subsection*{Filtering Out Offensive Possessions By Player}
+
+We need a function that will further filter a team's offensive moments by removing any moments that don't have a player of interest on the court. We do this in \textit{get\_player\_offensive\_moments()} by checking the relevant team columns (either away or home) for whether the player entity identifier is in any of the five entities on the court. Our implementation also removes all columns that won't be necessary for the follow up analysis, but this part isn't strictly necessary.
+
+LeBron James, undisputedly one of the top players in the NBA, is a player in this game with entity identifier 214152, playing for the away team Miami Heat. Table 6 shows the output of applying this player filter function. The number of moments reduced only from 24218 to 21257 as LeBron James was on the court for the majority of play, playing 42:14 out of 48:00 possible minutes for that game.
+
+<<print_player_df_output, warning=FALSE, message=FALSE, results="asis", cache=TRUE, echo=FALSE>>=
+rows = xtable(
+    head(dplyr::select(player_df, time, quarter, game_clock:ent_w_poss)),
+    caption="Output of get\\_player\\_offensive\\_moments(): the number of columns is filtered down and we only store the player's (x,y) coordinates for each row", digits=c(0,0,0,2,2,2,0,0))
+print(rows, caption.placement="top")
+@
+
+\subsection*{Transposing Offensive Possessions}
+
+The last utility function we need is one that transposes all offensive moments on one side of the court to the other, which we implement in \textit{flip\_coords()}. Spatially, a cut from the right-side of the 3-point arc to the baseline in the 1st half has different $(x,y)$ coordinates than the same cut in the 2nd half. But in terms of movement on offense, they're identical movements. To have a consistent frame of reference, we transpose all moments on the right-hand side to the left-hand side by flipping both the $x$ and $y$ coordinate: see Table 7 for the output.
+
+<<print_flipped_df_output, warning=FALSE, message=FALSE, results="asis", cache=TRUE, echo=FALSE>>=
+rows = xtable(
+    head(dplyr::select(flipped_df, time, quarter, game_clock:ent_w_poss)),
+    caption="Output of flip\\_coords(): notice how LeBron James' first half coordinates are transposed as the Miami Heat were attacking the right hand side of the court to start the game", digits=c(0,0,0,2,2,2,0,0))
+print(rows, caption.placement="top")
+@
+
+\begin{figure}[htb!]
+\centering
+\begin{tikzpicture}[node distance=2cm]
+
+%
+\node (moments) [data] {moments};
+%
+\node (moments2) [data, right of=moments, xshift=3cm] {moments};
+\node (dir_of_play) [data, below of=moments2, yshift=-0.5cm] {dir\_of\_play};
+\node (team_id) [constant, below of=dir_of_play, yshift=-0.5cm] {team\_id};
+\draw [arrow] (moments) -- node [anchor=center, below] {add\_possession\_data} (moments2);
+\draw [arrow] (moments) -- node [sloped, anchor=center, below]{get\_directions\_of\_play} (dir_of_play);
+%
+\node (off_moments) [data, right of=dir_of_play, xshift=4cm] {offensive\_moments};
+\draw [arrow] (moments2) -- (off_moments);
+\draw [arrow] (dir_of_play) -- node [anchor=center, below] {get\_offensive\_moments} (off_moments);
+\draw [arrow] (team_id) -- (off_moments);
+
+\end{tikzpicture}
+\caption{Flowchart of operations to transform our raw moments data and extract the relevant offensive moments for a team of interest}
+\end{figure}
+
+\begin{figure}
+\centering
+\begin{tikzpicture}[node distance=2cm]
+
+%
+\node (p_id) [constant] {player\_id};
+\node (off_moments2) [data, below of=p_id, yshift=-0.5cm] {offensive\_moments};
+\node (team_id2) [constant, below of=off_moments2, yshift=-0.5cm] {team\_id};
+%
+\node (player_df) [data, right of=off_moments2, xshift=4.5cm] {player\_df};
+\node (dir_of_play2) [data, above of=player_df] {dir\_of\_play};
+\draw [arrow] (p_id) -- node [sloped, anchor=center, below]{get\_player\_offensive\_moments} (player_df);
+\draw [arrow] (off_moments2) -- (player_df);
+\draw [arrow] (team_id2) -- (player_df);
+%
+\node (flipped_df) [data, right of=player_df, xshift=3cm] {flipped\_df};
+\draw [arrow] (dir_of_play2) -- node [sloped, anchor=center, below]{get\_flipped\_coords} (flipped_df);
+\draw [arrow] (player_df) -- (flipped_df);
+\draw [arrow] (team_id2) -- (flipped_df);
+
+\end{tikzpicture}
+\caption{Flowchart of operations to obtain the relevant offensive moments for a player}
+\end{figure}
+
+\clearpage
+
+\section*{Movement Simulation Functions}
+
+<<usetheregressioncodeandplot, warning=FALSE, message=FALSE, echo=FALSE>>=
+library(raster)
+
+r = raster(xmn=XMIN, ymn=YMIN, xmx=XMID, ymx=YMAX, res=RASTER_RES)
+r[] = 0
+sigma = 0.2
+
+emp_etas_on_ball = get_empirical_etas(r, df_on_ball)
+emp_etas_off_ball = get_empirical_etas(r, df_off_ball)
+
+regression_data_on = get_regression_inputs(emp_etas_on_ball)
+regression_data_off = get_regression_inputs(emp_etas_off_ball)
+
+regression_output_on_bayes = bayes_regression(
+    regression_data_on[['X']], regression_data_on[['Y']], sigma=sigma
+)
+regression_output_off_bayes = bayes_regression(
+    regression_data_off[['X']], regression_data_off[['Y']], sigma=sigma
+)
+
+eta_data_on_ball_bayes = format_data_to_plot(
+    r, regression_output_on_bayes[['ls_x']],
+    regression_output_on_bayes[['ls_y']]
+)
+eta_data_off_ball_bayes = format_data_to_plot(
+    r, regression_output_off_bayes[['ls_x']],
+    regression_output_off_bayes[['ls_y']]
+)
+
+library(gridExtra)
+source('plot_court_functions.R')
+
+plot_on = visualize_etas(
+    r, eta_data_on_ball_bayes, "2013/11/01: LeBron James on-ball"
+)
+plot_off = visualize_etas(
+    r, eta_data_off_ball_bayes, "2013/11/01: LeBron James off-ball"
+)
+@
+
+We use a helpful package called \textbf{raster} \citep{rastervignette} which provides functionality for transforming our court space into a grid of equally sized cells by converting it into a RasterLayer object. The package provides useful functions for referencing back and forth from $(x,y)$ coordinates to cells. For our implementation, we have $V=600$ cells from [0,47]x[0,50] (we constrain ourselves to the left-hand half-court, since all movement in the offensive possessions are transposed to the left side of the court, and offensive possessions for each player are such that the ball and the player have crossed the half-court line for the respective direction of play). $V$ is a parameter you can tune to be higher if you want to grid the court at a higher precision, at the expense of increased computation time and sparsity in your data.
+
+\subsection*{Motivation}
+
+Simulating player movement on offense can sound like a daunting task. A simpler point of view on the same problem is that one needs to generate a new sensible spatial coordinate given the most recent spatial coordinates we observed. Such a model for player movement is explained in the aforementioned paper on estimating expected possession value~\citep{EPV}. The paper's summarized research output is a framework that uses the SportVU data to perform estimation of the expected number of points obtained by the end of a possession, by way of a stochastic process model that models the evolution of a basketball possession. Focusing our attention on the introduced microtransition model, the authors propose a model that describes player movement when a ``major ball movement" does not occur (such as passes, shots, and turnovers). Though they build separate models for offensive and defensive players, we restrict our discussion here to the offensive player movement model, since that is the scope of the project.
+
+For each player $l$, the next locations are given by:
+\begin{align}
+\begin{split}
+x^l(t+1) = x^l(t) + \alpha_x^l\lbrack x^l(t) - x^l(t-1) \rbrack + \eta^l_x(t)
+\\
+y^l(t+1) = y^l(t) + \alpha_y^l\lbrack y^l(t) - y^l(t-1) \rbrack + \eta^l_y(t)
+\end{split}
+\end{align}
+
+A player's coordinate at time $t+1$ is modelled as position at time $t$, plus the player's velocity from position at time $t-1$ to time $t$ (weighted by a parameter $\alpha^l$, which we set to $1$), plus an $\eta^l$ term which represents the contribution of higher order derivatives to the player movement (such as acceleration, jerk, etc.). These dynamics are nonstationary; in other words, the nature of $\eta^l$ alters over space. Intuitively this makes sense, as players who are almost out of bounds will accelerate away from the edges of the court to stay in bounds, and players who accelerate toward the basket will generally decelerate when approaching their attempt to shoot.
+
+When trying to generate a new $(x^l_{t+1}, y^l_{t+1})$, we trivially have $(x^l_{t}, y^l_{t})$ and $(x^l_{t-1}, y^l_{t-1})$; the challenge then is to generate a sensible $\eta^l$ value. Instead of estimating the true distribution for $\eta^l$ (which would involve estimating parameters for each player $l$) and sampling from that, we can opt for a data driven approach by collecting all of the $\eta^l$'s we observe throughout the course of the game for the player, and then sampling from this collection directly whenever we want to determine a player's new position on the court.
+
+Taking the formulas above, setting $\alpha_x^l, \alpha_y^l = 1$ and isolating for $\eta^l$, we have:
+
+\begin{align}
+\label{eta_eq}
+\begin{split}
+\eta^l_x(t) = \lbrack x^l(t+1) - x^l(t) \rbrack - \lbrack x^l(t) - x^l(t-1) \rbrack
+\\
+\eta^l_y(t) = \lbrack y^l(t+1) - y^l(t) \rbrack - \lbrack y^l(t) - y^l(t-1) \rbrack
+\end{split}
+\end{align}
+
+From the rearranged equations we can see that player acceleration, which $\eta^l$ captures, is simply the difference in player $l's$ velocity observed at the two previous time points. We refer to the collection of these calculated $\eta's$ as ``empirical $\eta's$".
+
+\subsection*{Obtaining the Empirical $\eta's$}
+
+Our filtered player moments aren't a completely connected sequence of movements. An NBA game has many stoppages; timeouts, out of bounds, and ends of quarters, to name a few. Consider some point in time $t$ where $(x_{t-1}, y_{t-1})$ is the last moment recorded of one offensive possession. Since we have filtered out non-offensive moments, the $(x_{t}, y_{t})$ in our dataset is the first moment of a new offensive possession - very likely in a completely different spatial region. We need some way of recognizing situations like these, so that we don't consider these as natural movements from one location to another in our processing. We can do this by skipping any $t$ where $dist(x_{t}, y_{t}) > \delta$, for some $\delta$ parameter we choose, which is what we do in \textit{skip\_this\_iteration()}.
+
+
+We chose $\delta$ by looking at the distribution of Euclidean distances from one moment to the next for LeBron James in our sample game, shown in Figure 1. The 99th percentile was 0.7524233, so we chose $\delta = 1$ as a safe, round number. For reference, Usain Bolt's record breaking 28 mph translates to 41 feet per second which equals 1.64 feet per 1/25th of a second.
+
+
+<<plotdistribution, fig.pos="h", fig.height=4, fig.cap="Distribution of movement distance from frame to frame for LeBron James for 2013/11/01 vs. the Brooklyn Nets", warning=FALSE, echo=FALSE>>=
+plot_distribution_of_movement_distances(player_df)
+@
+
+Recall that to generate our empirical $\eta's$, we need $(x_{t-1}, y_{t-1}), (x_{t}, y_{t}), \text{ and } (x_{t+1}, y_{t+1})$ for every $t=2, \dots, n-1$ (where $n =$ number of player's offensive moments). In the function \textit{get\_empirical\_etas()}, we iterate through a given player's filtered moments $t=2, \dots, n-1$ (excluding $t=1$ and $t=n$ because there is no previous and next moment for those time points, respectively), calculate the results from Equation \ref{eta_eq}, and encode the empirical $\eta$ data in a matrix with 3 columns: cell, $\eta_x$ and $\eta_y$.
+
+<<print_empirical_etas_output, warning=FALSE, message=FALSE, results="asis", cache=TRUE, echo=FALSE>>=
+rows = xtable(
+    head(transform(emp_etas_on_ball, cell=as.integer(cell))),
+    caption="Output of get\\_empirical\\_etas() for LeBron James' on-ball data: there are 15425 rows for off-ball and 4777 rows for on-ball")
+print(rows, caption.placement="top")
+@
+
+\section*{Visualization}
+
+How can we visualize our results to validate what we have done? One way to visualize the empirical $\eta's$ is to show the average acceleration vector at each cell of the court - see Figure 4 in~\cite{EPV} for the type of image that we seek to produce. The idea is: for each cell $v=1, \dots, V$, if there were collected data at that cell, we take the cell's center as the beginning of the arrow and add the average $(\eta^l_x, \eta^l_y)$ to get the end of the arrow. The length of the arrow directly represents the magnitude of the average stochastic innovation observed at that cell. This is equivalent to running a linear regression twice, where each of the $\eta_x$, $\eta_y$ is a response variable, and the $\textbf{X}$ matrix is a one-hot encoded vector of which cell the $\eta$ was observed in. However, this will result in a jerky plot (especially with a small sample size of the one game we are demonstrating). We use Bayesian regression, where we use a precision matrix to incorporate the spatial information of the cells and its neighbours, to give us smoother averages and thus a smoother visualization. The function \textit{get\_regression\_inputs()} transforms the empirical $\eta$ data into the design matrix and response variable that \textit{bayes\_regression()} will use to calculate the smoothed averages.
+
+<<print_bayes_regression_output, warning=FALSE, message=FALSE, results="asis", cache=TRUE, echo=FALSE>>=
+d = data.frame(regression_output_on_bayes[['ls_x']], regression_output_on_bayes[['ls_y']])
+colnames(d) = c('ls_x', 'ls_y')
+rows = xtable(
+    head(d),
+    caption="Output of bayes\\_regression() for LeBron James' on-ball data: the result is a smoothed (x,y) pair for each of the V=600 cells",
+    digits=6
+    )
+print(rows, caption.placement="top")
+@
+
+\textit{format\_data\_to\_plot()} turns our regression outputs into a format that enables straightforward plotting of our arrows. By applying the averaged magnitudes in each cell to the cell's center coordinate, the output can simply be the $(x,y)$ coordinates of the head and tail of each arrow.
+
+<<print_format_data_to_plot_output, warning=FALSE, message=FALSE, results="asis", cache=TRUE, echo=FALSE>>=
+rows = xtable(
+    head(eta_data_on_ball_bayes),
+    caption="Output of format\\_data\\_to\\_plot(): (x1, y1) is the center coordinate and (x2, y2) is the coordinate for the arrow head, for each of the V=600 cells",
+    digits=6
+    )
+print(rows, caption.placement="top")
+@
+
+Lastly, we need a function, \textit{visualize\_etas()}, that will take this formatted arrow data and do our plotting. The colors and size indicate the magnitude of the empirical $\eta$ vector. For the code to plot the court itself, we stand on the shoulders of past giants~\citep{plotcourt} and leverage existing open source code. The output of the plotting function for LeBron James in the game we are analyzing is visualized in Figure 5.
+
+
+\begin{figure}
+\centering
+\begin{tikzpicture}[node distance=2cm]
+
+%
+\node (flipped_df2) [data] {flipped\_df};
+%
+\node (filtered_df) [data, right of=flipped_df2, xshift=3cm] {df};
+\draw [arrow] (flipped_df2) -- node [anchor=center, below]{filter\_for\_on\_or\_off\_ball} (filtered_df);
+%
+\node (emp_etas) [data, right of=filtered_df, xshift=2.5cm] {empirical\_etas};
+\draw [arrow] (filtered_df) -- node [anchor=center, below]{get\_empirical\_etas} (emp_etas);
+%
+\node (regression_inputs) [data, below of=emp_etas] {regression\_inputs};
+\draw [arrow] (emp_etas) -- node [anchor=center, right]{get\_regression\_inputs} (regression_inputs);
+%
+\node (regression_outputs) [data, left of=regression_inputs, xshift=-3.5cm] {regression\_outputs};
+\draw [arrow] (regression_inputs) -- node [anchor=center, below]{bayes\_regression} (regression_outputs);
+%
+\node (arrow_data) [data, below of=regression_outputs] {arrow\_data};
+\draw [arrow] (regression_outputs) -- node [anchor=center, left]{format\_data\_to\_plot} (arrow_data);
+%
+\node (arrow_plot) [plot, right of=arrow_data, xshift=2.5cm] {plot};
+\draw [arrow] (arrow_data) -- node [anchor=center, below]{visualize\_etas} (arrow_plot);
+
+\end{tikzpicture}
+\caption{Flowchart of operations to extract the empirical $\eta's$ from a player's offensive moments and to produce visualizations}
+\end{figure}
+
+
+<<plotregressiongame, fig.pos="h", fig.height=4, fig.cap="Visualization of smoothed empirical acceleration vectors for LeBron James for 2013/11/01 vs. the Brooklyn Nets", fig.lp="lbj_singlegame", warning=FALSE, echo=FALSE>>=
+grid.arrange(plot_on, plot_off, ncol=2)
+@
+
+
+\section*{Conclusions}
+
+Looking at Figure 5, there are some exaggerated $\eta's$ due to the small sample size of one game. Using a season's worth of data for a player, 82 games, results in significantly smoother plots. The smoothed season plots are generated for the 2015-2016 NBA season for Andre Drummond, LeBron James, and Steph Curry in Figures \ref{drummond}, \ref{lbj}, and \ref{curry} respectively.
+
+Upon visual inspection of these figures, the smoothed out results across an entire season make intuitive sense and pass the ``smell-test" that is commonly applied when analytical methods are tried on sports; failing the ``smell-test" occurs when a result derived from quantitative analysis is completely backwards from accepted consensus. We conclude with a discussion of how our results provide a visual explanation behind our intuition that these three NBA stars move using very different styles on offense.
+
+\subsection*{Off-ball Plots}
+
+In general, acceleration occurs away from the out-of-bounds lines, as players are penalized with a turnover in ball possession if they step out of bounds. There is another visible trend of general acceleration toward the hoop, with the values being higher near the half-court (since players often run from their defensive half to the offensive half to set up in their team's offensive sets).
+
+Notice how that half-court effect is the most pronounced for a center like Andre Drummond when he is without the ball. It is increasingly common to find 7 footers in the NBA like Karl Anthony Towns and Kristaps Porzingis who can shoot from beyond the 3-point line with ease; however, Drummond's offensive contributions are almost exclusively from inside the paint. As the main hub in coach Stan Van Gundy's scheme (the same one successfully deployed in the past coaching Dwight Howard in Orlando, a center with similar strengths and limitations), Drummond's priority on offense is to occupy the paint area as quickly as possible. Drummond is also the center anchor of his defense as a shot-blocking rim protector. Thus, most of his movement in his transition from defense to offense occurs in a straight line down the middle of the court between both baskets.
+
+LeBron is a perimeter playing forward. Though versatile in the positions that he can play and in the areas of the court that he can excel in, his primary defensive assignments will have him situated on either wing. With his extreme athleticism, surrounded by good passers (including a particularly notable outlet passer for fastbreaks in Kevin Love) and a teammate who can assume primary ball-handling duties in Kyrie Irving, LeBron can sprint ahead during the transition from defense to offense to attempt a high percentage fastbreak opportunity. Thus, LeBron's acceleration is largest coming from the wings.
+
+Steph Curry in comparison has relatively small acceleration values. He is the primary ball-handler on his team and is much more likely to be leading a fastbreak opportunity with the ball in his hands than running on the wing without the ball as a finisher like LeBron. Famously known for effortlessly draining 3-point shots several feet past the 3-point line, Curry doesn't need to accelerate much to end up in a scoring position once he crosses the half-court line.
+
+\subsection*{On-ball Plots}
+
+As a player with traditional NBA center limitations, Drummond does not consistently accelerate with the ball with an intent to score. His offensive strengths consists of attempting shots within the paint immediately after catching the ball. His other shot attempts include shots taken after backing his defender down in the post (which consists of dribbling the ball with his back to the basket to inch closer towards it, generating almost no acceleration).
+
+LeBron is a prolific driver to the basket with the ball in his hands and has perenially been one of the league's best at this skill since he entered the league. He has a unique combination of height, body strength, and dribbling ability which allows him to deflect and absorb contact from defenders on his way toward successfully scoring near the rim.
+
+Comparing Curry's plot to LeBron's, Curry has an even wider range of angles where he successfully accelerates toward the hoop while dribbling. Curry's magic is that he is not hyper athletic like LeBron (or even a positional counterpart, like Russell Westbrook). His ubiquitous shot-making ability coupled with one of the best dribbling abilities in the NBA explain why he had a historic offensive season in his 2015-2016 Most Valuable Player campaign. However, his on-ball plot helps illuminate exactly how much more action he was able to generate toward the rim with the ball in his hands relative to even a top performing peer such as LeBron.
+
+
+\begin{figure}
+    \centering
+    \begin{minipage}[b]{0.45\textwidth}
+    \includegraphics[width=\textwidth]{plots/drummond_onball.png}
+    \end{minipage}
+    \begin{minipage}[b]{0.45\textwidth}
+    \includegraphics[width=\textwidth]{plots/drummond_offball.png}
+    \end{minipage}
+    \caption{2015-2016 Andre Drummond Empirical $\eta's$}
+    \label{drummond}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \begin{minipage}[b]{0.45\textwidth}
+    \includegraphics[width=\textwidth]{plots/lbj_onball.png}
+    \end{minipage}
+    \begin{minipage}[b]{0.45\textwidth}
+    \includegraphics[width=\textwidth]{plots/lbj_offball.png}
+    \end{minipage}
+    \caption{2015-2016 LeBron James Empirical $\eta's$}
+    \label{lbj}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \begin{minipage}[b]{0.45\textwidth}
+    \includegraphics[width=\textwidth]{plots/curry_onball.png}
+    \end{minipage}
+    \begin{minipage}[b]{0.45\textwidth}
+    \includegraphics[width=\textwidth]{plots/curry_offball.png}
+    \end{minipage}
+    \caption{2015-2016 Steph Curry Empirical $\eta's$}
+    \label{curry}
+\end{figure}
+
+\newpage
+
+\subsection*{Applications}
+
+From the discussion of the visualized results for Drummond, Curry, and LeBron, we see that a player's empirical $\eta's$ can be used as features to describe different types of playing styles on offense. Analysts of the NBA are generally interested in methods that can quantify new insights that impact player evaluation. Comprehensive player evaluation allows teams to tackle higher level questions; some examples include game preparation (preparing for players on the opposing team) and roster management (scouting for possible acquisitions to a team's roster).
+
+
+Thanks to increased discourse and acceptance of the role of analytics in the NBA, offense has trended toward a focus on having a higher proportion of field goal attempts of either three-point shots or shots resulting from drives toward the rim. This has resulted in a premium being placed on finding players who excel at either skill (or ideally, both). Players who consistently show the ability to attack the basket with the ball from the perimeter create a lot more value than just an attempt at a high probability field goal make; they can cause perimeter help defenders to leave their marks which results in uncontested three-point shots, and they can cause interior help defenders to leave their marks which can result in easier shots in the paint. These visualizations can help identify such players who can directly cause disorganization in the opposing team's defense.
+
+There are some existing metrics which can approximately quantify this skill, but they can come up short if you want a more complete picture of a player's ability to drive towards the opposing basket. Number of drives per game misses the spatial context of each attempt; a general manager would not want to compose a roster where all their best drivers favor going right, as that can clog up the spacing of the team's offense. Number of made layups/dunks per game doesn't help you find players who execute an attacking drive correctly at every point in time and miss the final finish. If you can find a player who has an on-ball plot similar to Steph Curry but can't finish like him yet, you can acquire him at a discount of his market value and focus on improving that weakness during player development training. Being able to quantitatively identify players who have the potential to blossom into stars offers a large edge in the NBA, where player acquisitions are constrained by salary caps and competing interest from other teams.
+
+\bibliography{references.bib}
+
+\end{document}
