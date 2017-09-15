@@ -5,10 +5,12 @@
 \usepackage{amsmath}
 \usetikzlibrary{shapes.geometric, arrows}
 
-\title{Modeling Offensive Player Movement in Professional Basketball}
+\title{Modeling offensive player movement in professional basketball}
 
-\author[1]{Steven Wu}
+\author[1]{Steven Wu \footnote{Contact: Steven Wu at hello@stevenwu.info}}
 \author[1,2]{Luke Bornn}
+%\author[1]{Steven Wu}
+%\author[1,2]{Luke Bornn}
 \affil[1]{Department of Statistics and Actuarial Science, Simon Fraser University}
 \affil[2]{Sacramento Kings}
 
@@ -18,6 +20,7 @@
 The 2013 arrival of SportVU player tracking data in all NBA arenas introduced an overwhelming amount of on-court information - information which the league is still learning how to maximize for insights into player performance and basketball strategy. Knowing where the ball and every player on the court are at all times throughout the course of the game produces almost endless possibilities, and it can be difficult figuring out where to begin. This article serves as a step-by-step guide for how to turn a data feed of one million rows of SportVU data from one NBA game into visualizable components you can use to model any player's movement. We detail some utility functions that are helpful for manipulating SportVU data before applying it to the task of visualizing player offensive movement. We conclude with visualizations of the resulting output for one NBA game, as well as what the results look like aggregated across an entire season for three NBA stars with very different offensive tendencies.
 \end{abstract}
 
+\pdfminorversion=4
 \begin{document}
 
 \tikzstyle{data} = [rectangle, minimum width=0.5cm, minimum height=0.5cm, text centered, draw=black, fill=green!30]
