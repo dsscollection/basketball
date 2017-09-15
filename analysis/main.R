@@ -1,6 +1,7 @@
 library(raster)
 library(gridExtra)
 library(dplyr)
+library(RCurl)
 
 setwd('~/Code/basketball')
 source('constants.R')
@@ -18,7 +19,8 @@ source('visualization_functions.R')
 # - Plot the results
 
 # Away = Miami, Home = Brooklyn
-moments = read.csv('data/2013_11_01_MIA_BKN.csv')
+data = getURL('https://raw.githubusercontent.com/dcervone/EPVDemo/master/data/2013_11_01_MIA_BKN.csv')
+moments = read.csv(text=data)
 
 p_id = 214152
 team = 'a'
