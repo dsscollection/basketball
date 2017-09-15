@@ -41,7 +41,7 @@ Knowing precisely where each player is throughout a game spurs interesting quest
 Imagine a simulator that approximates movement for each individual player, conditioned on all of the factors involving the player - front-office decision makers could understand how different lineup permutations could potentially co-exist on the court at a finer level before committing to irreversible decisions. This article presents a comprehensive walkthrough of how we turn this raw data into results that can be used for a first-approximation simulator for NBA player movement on offense, and how this can help gain new insights on player offensive movement tendencies. We're going to focus on offensive movement, as defensive movement is largely a function of the offensive player the defender is guarding.
 
 \section*{Availability of the Data}
-The data used in this article is the SportVU data for one sample game, available as a .csv file at \url{https://github.com/dsscollection/basketball}. There is another GitHub repository, \url{https://github.com/neilmj}, where efforts are made to upload raw SportVU data on a regular basis \citep{github_sportvu_data}. Several blog posts exist online that provide examples of varying detail into programatically accessing the \url{http://stats.nba.com} API directly \citep{gregreda_api} \citep{danielforsyth_api}.
+The data used in this article is the SportVU data for one sample game, available as a .csv file at \url{https://github.com/dcervone/EPVDemo/blob/master/data/2013_11_01_MIA_BKN.csv}. There is another GitHub repository, \url{https://github.com/neilmj}, where efforts are made to upload raw SportVU data on a regular basis \citep{github_sportvu_data}. Several blog posts exist online that provide examples of varying detail into programatically accessing the \url{http://stats.nba.com} API directly \citep{gregreda_api} \citep{danielforsyth_api}.
 
 %APIs can be unreliable for a number of reasons. As updates often happen when development on the API continues for new features and bug fixes, both the structure of your requests and the handling of the responses may require change in your code. Sometimes, such as the announcement on January 25 2016 on \url{http://stats.nba.com/help/whatsnew/} of the player movements API, a feature may unexpectedly shut down or cease to work. Learning how to extract information from online sources through scraping and API requests is a topic beyond the scope of this article. However, it is a useful skill to build your own datasets of interest, and it will allow you to adapt with the dynamic nature of the web.
 
@@ -57,6 +57,7 @@ Tables 1 and 2 offer a peek at a sample of the dataset. Table \ref{column_table}
 library(here)
 library(xtable)
 library(dplyr)
+library(RCurl)
 
 source('constants.R')
 source('utils.R')
@@ -64,7 +65,8 @@ source('movement_functions.R')
 source('visualization_functions.R')
 
 # Away = Miami, Home = Brooklyn
-moments = read.csv('../data/2013_11_01_MIA_BKN.csv')
+data = getURL('https://raw.githubusercontent.com/dcervone/EPVDemo/master/data/2013_11_01_MIA_BKN.csv')
+moments = read.csv(text=data)
 @
 
 <<step1, warning=FALSE, message=FALSE, results="asis", cache=TRUE, echo=FALSE>>=
